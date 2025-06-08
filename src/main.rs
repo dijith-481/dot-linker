@@ -1,291 +1,115 @@
+use anyhow::{Result, ensure};
 use clap::Parser;
-use glob::Pattern;
-use std::io::Write;
+use dot_linker::{
+    cli::Args,
+    config::{determine_config_file, get_config_path},
+    handle_link,
+    ignore::IgnoreList,
+    link::get_link_action,
+    prompt_user,
+    ui::verbose_println,
+};
+
+use dot_linker::UIMode;
+use dot_linker::ui::get_ui_mode;
 use std::{
-    collections::HashSet,
     env,
     path::{Path, PathBuf},
 };
 
-#[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
-struct Args {
-    /// The target directory to symlink to
-    #[clap(short, long)]
-    target: Option<PathBuf>,
-
-    /// The directory to symlink from
-    #[clap(value_name = "DIR")]
-    dir: Option<PathBuf>,
-
-    /// The files to symlink if not symlinking from a directory this takes precedence over dir
-    #[clap(short, long, value_name = "FILE", num_args=1.. )]
-    files: Option<Vec<String>>,
-
-    /// The files to ignore if symlinking from a directory
-    #[clap(short, long, value_name = "IGNORE", num_args=1.. )]
-    ignore: Option<Vec<String>>,
-
-    /// donesn't actually symlink but prints the target
-    #[clap(short, long, default_value_t = false)]
-    no_symlink: bool,
-
-    /// asks for confirmation before symlinking
-    #[clap(short, long, default_value_t = false)]
-    visual: bool,
-
-    /// prints verbose output
-    #[clap(long, default_value_t = false)]
-    verbose: bool,
-
-    /// unset symlink
-    #[clap(short, long, default_value_t = false)]
-    unset: bool,
-
-    /// path to config file
-    #[clap(short, long, default_value_t = String::from("dotlinker/dotlinkerignore"))]
-    config: String,
-}
-
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
+    let is_verbose = args.verbose;
     let config_path = get_config_path()?;
-    let target = match args.target {
-        Some(t) => {
-            if !t.exists() {
-                anyhow::bail!("target '{}' does not exist", t.display());
-            }
-            if !t.is_dir() {
-                anyhow::bail!("target '{}' is not a directory", t.display());
-            }
-            print_verbose(&format!("target directory set to '{}'", t.display()));
-            t
-        }
-        None => config_path.clone(),
-    };
+    let target_dir = determine_target_directory(&args.target, &config_path, is_verbose)?;
+    let current_dir = env::current_dir()?;
+    let base_dir = determine_base_dir(&args.dir, &current_dir, is_verbose)?;
+    let ui_mode = get_ui_mode(args.visual);
+    let config_file_path =
+        determine_config_file(&args.config, &current_dir, &base_dir, &config_path)?;
+
+    let mut ignore_list = IgnoreList::new();
+    ignore_list.load_from_file(&config_file_path, &base_dir)?;
+    ignore_list.add_literals(args.ignore, &base_dir);
+
+    let action = get_link_action(args.unset);
+    let simulate = args.no_symlink;
 
     match args.files {
         Some(files) => {
             for file in files {
-                let path = env::current_dir()?.join(file);
-                println!("file is {:?}", path);
-                handle_symlink(&path, &target, args.no_symlink, args.unset)?;
+                let path = base_dir.join(file);
+                if ignore_list.is_ignored(&path)
+                    && !prompt_user(
+                        "this file is in ignore list , do you want to symlink anyway?",
+                        UIMode::Interactive,
+                    )?
+                {
+                    verbose_println(
+                        &format!("file in ignore list {},skipping", path.display()),
+                        is_verbose,
+                    );
+                    continue;
+                }
+                handle_link(&path, &target_dir, &action, simulate)?
             }
         }
         None => {
-            print_verbose("no files provided in --files    checking for directory");
-            let current_dir = match args.dir {
-                Some(d) => {
-                    if !d.exists() {
-                        anyhow::bail!("dir does not exist");
-                    }
-                    print_verbose(&format!("dir set to {}", d.display()));
-                    d
-                }
-                None => {
-                    let current_dir = env::current_dir()?;
-                    if !print_visual(
-                        "current directory",
-                        &format!("{}", current_dir.display()),
-                        Some("no dir provided , using current dir"),
-                    )? {
-                        println!("aborting");
-                        return Ok(());
-                    }
-                    current_dir
-                }
-            };
-            let files = current_dir.read_dir()?;
-            let mut ignore = match args.ignore {
-                Some(i) => {
-                    print_verbose("ignoring files");
-                    i.iter().map(|i| current_dir.join(i)).collect()
-                }
-                None => HashSet::new(),
-            };
-            let mut patterns = Vec::new();
-            if current_dir.join(&args.config).exists() {
-                let (literal_paths, p) =
-                    parse_ignore_file(&current_dir.join(&args.config), &current_dir)?;
-                ignore.extend(literal_paths);
-                patterns.extend(p);
-            }
-            create_config_file(&config_path)?;
-            let dotlinker_path = config_path.join("dotlinker").join("dotlinkerignore");
-            let (literal_paths, p) =
-                parse_ignore_file(&config_path.join(dotlinker_path), &current_dir)?;
-            ignore.extend(literal_paths);
-            patterns.extend(p);
-
+            let files = base_dir.read_dir()?;
             for file in files {
                 let path = file?.path();
-                if ignore.contains(&path) {
-                    print_verbose(&format!("ignoring {}", path.display()));
+                if ignore_list.is_ignored(&path)
+                    && !prompt_user(
+                        "this file is in ignore list , do you want to symlink anyway?",
+                        ui_mode,
+                    )?
+                {
+                    verbose_println(
+                        &format!("file in ignore list {},skipping", path.display()),
+                        is_verbose,
+                    );
                     continue;
                 }
-                if patterns.iter().any(|p| {
-                    let file_name = path
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or("");
-                    Pattern::matches(p, file_name)
-                    // p.matches_path(&path)
-                }) {
-                    println!("ignoring {}", path.display());
-                    continue;
-                }
-                handle_symlink(&path, &target, args.no_symlink, args.unset)?;
+                handle_link(&path, &target_dir, &action, simulate)?
             }
         }
     }
     Ok(())
 }
 
-fn handle_symlink(
-    file: &PathBuf,
-    target: &Path,
-    no_symlink: bool,
-    unset: bool,
-) -> anyhow::Result<()> {
-    if file.file_name().is_none() {
-        println!("skipping '{}'  filename not found", file.display());
-        return Ok(());
-    }
-    let file_name = file.file_name().unwrap();
-    let target = target.join(file_name);
-    if unset {
-        if !target.exists() {
-            println!("target '{}' doesn't exists", target.display());
-            return Ok(());
-        }
-        let metadata = std::fs::symlink_metadata(&target)?;
-        if !metadata.file_type().is_symlink() {
-            println!("target {} is not a symlink", target.display());
-            return Ok(());
-        }
-        if !print_visual("unlink", &format!("{}", file_name.to_string_lossy()), None)? {
-            println!("skipping '{}' ", file.display());
-            return Ok(());
-        }
-        if no_symlink {
-            println!(
-                "unlinking '{}' from '{}', no unlinking due to --no-symlink",
-                file.display(),
-                target.display()
-            );
-            return Ok(());
-        } else {
-            println!("unlinking '{}' from {}", file.display(), target.display());
-            std::fs::remove_file(target)?;
-        }
-    } else {
-        if target.exists() {
-            println!("target '{}' already exists", target.display());
-            return Ok(());
-        }
-        if !print_visual("symlink", &format!("{}", file_name.to_string_lossy()), None)? {
-            println!("skipping '{}' ", file.display());
-            return Ok(());
-        }
-
-        if no_symlink {
-            println!(
-                "symlinking '{}' to '{}', no symlink created due to --no-symlink",
-                file.display(),
-                target.display()
-            );
-            return Ok(());
-        } else {
-            println!("symlinking '{}' to {}", file.display(), target.display());
-            std::os::unix::fs::symlink(file, target)?;
-        }
-    }
-    Ok(())
-}
-
-fn print_verbose(msg: &str) {
-    let verbose = Args::parse().verbose;
-    if verbose {
-        println!("{}", msg);
-    }
-}
-
-fn print_visual(item: &str, value: &str, else_msg: Option<&str>) -> anyhow::Result<bool> {
-    let visual = Args::parse().visual;
-    if !visual {
-        if let Some(msg) = else_msg {
-            print_verbose(msg);
-        }
-        return Ok(true);
-    }
-    print!("set {} to {}(y/n)", item, value);
-    std::io::stdout().flush()?;
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input)?;
-    if !matches!(input.trim(), "y" | "yes" | "") {
-        return Ok(false);
-    }
-    print_verbose(&format!("{} set to {}", item, value));
-    Ok(true)
-}
-
-fn get_config_path() -> anyhow::Result<PathBuf> {
-    let xdg_config_home = env::var("XDG_CONFIG_HOME").ok();
-    let home = env::var("HOME")?;
-    let path = match xdg_config_home {
-        Some(path) => PathBuf::from(path),
-        None => PathBuf::from(home).join(".config"),
-    };
-    Ok(path)
-}
-
-fn parse_ignore_file(
+fn determine_target_directory(
+    target: &Option<PathBuf>,
     config_path: &Path,
+    is_verbose: bool,
+) -> Result<PathBuf> {
+    let dir = match target {
+        Some(t) => {
+            ensure!(t.exists(), "target '{}' does not exist", t.display());
+            ensure!(t.is_dir(), "target '{}' is not a directory", t.display());
+            verbose_println(
+                &format!("target directory set to '{}'", t.display()),
+                is_verbose,
+            );
+            t.clone()
+        }
+        None => config_path.to_path_buf(),
+    };
+    Ok(dir)
+}
+
+fn determine_base_dir(
+    base_dir: &Option<PathBuf>,
     current_dir: &Path,
-) -> anyhow::Result<(HashSet<PathBuf>, Vec<Pattern>)> {
-    let ignorefile = std::fs::read_to_string(config_path)?;
-    let mut literal_paths = HashSet::new();
-    let mut patterns = Vec::new();
-
-    for line in ignorefile.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
+    is_verbose: bool,
+) -> Result<PathBuf> {
+    let dir = match base_dir {
+        Some(b) => {
+            ensure!(b.exists(), "base dir '{}' does not exist", b.display());
+            ensure!(b.is_dir(), "base dir '{}' is not a directory", b.display());
+            verbose_println(&format!("base dir set to '{}'", b.display()), is_verbose);
+            b.clone()
         }
-        let mut pattern = line.to_string();
-        if pattern.ends_with('/') {
-            pattern = pattern.strip_suffix('/').unwrap().to_string();
-        } else if pattern.starts_with('/') {
-            pattern = pattern.strip_prefix('/').unwrap().to_string();
-        }
-        if is_literal_pattern(&pattern) {
-            literal_paths.insert(current_dir.join(pattern));
-        } else {
-            patterns.push(Pattern::new(&pattern)?);
-        }
-    }
-
-    Ok((literal_paths, patterns))
-}
-
-fn is_literal_pattern(pattern: &str) -> bool {
-    !pattern.contains(&['*', '?', '[', ']'][..])
-}
-
-fn create_config_file(config_path: &Path) -> anyhow::Result<()> {
-    if config_path
-        .join("dotlinker")
-        .join("dotlinkerignore")
-        .exists()
-    {
-        return Ok(());
-    }
-    print_verbose("no dotlinkerignore found creating one");
-    let dotlinker_dir = config_path.join("dotlinker");
-    std::fs::create_dir_all(&dotlinker_dir)?;
-    std::fs::write(
-        dotlinker_dir.join("dotlinkerignore"),
-        "# This file is used to ignore files when symlinking\n.git*\nREADME.md\nLICENSE",
-    )?;
-    Ok(())
+        None => current_dir.to_path_buf(),
+    };
+    Ok(dir)
 }
