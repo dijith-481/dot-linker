@@ -1,4 +1,5 @@
 use clap::Parser;
+use glob::Pattern;
 use std::io::Write;
 use std::{
     collections::HashSet,
@@ -102,23 +103,35 @@ fn main() -> anyhow::Result<()> {
                 }
                 None => HashSet::new(),
             };
+            let mut patterns = Vec::new();
             if current_dir.join(&args.config).exists() {
-                ignore.extend(convert_ignore_to_globs(
-                    &current_dir.join(&args.config),
-                    &current_dir,
-                )?);
+                let (literal_paths, p) =
+                    parse_ignore_file(&current_dir.join(&args.config), &current_dir)?;
+                ignore.extend(literal_paths);
+                patterns.extend(p);
             }
             create_config_file(&config_path)?;
             let dotlinker_path = config_path.join("dotlinker").join("dotlinkerignore");
-            ignore.extend(convert_ignore_to_globs(
-                &config_path.join(dotlinker_path),
-                &current_dir,
-            )?);
+            let (literal_paths, p) =
+                parse_ignore_file(&config_path.join(dotlinker_path), &current_dir)?;
+            ignore.extend(literal_paths);
+            patterns.extend(p);
 
             for file in files {
                 let path = file?.path();
                 if ignore.contains(&path) {
                     print_verbose(&format!("ignoring {}", path.display()));
+                    continue;
+                }
+                if patterns.iter().any(|p| {
+                    let file_name = path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("");
+                    Pattern::matches(p, file_name)
+                    // p.matches_path(&path)
+                }) {
+                    println!("ignoring {}", path.display());
                     continue;
                 }
                 handle_symlink(&path, &target, args.no_symlink, args.unset)?;
@@ -226,24 +239,37 @@ fn get_config_path() -> anyhow::Result<PathBuf> {
     Ok(path)
 }
 
-fn convert_ignore_to_globs(
+fn parse_ignore_file(
     config_path: &Path,
     current_dir: &Path,
-) -> anyhow::Result<HashSet<PathBuf>> {
+) -> anyhow::Result<(HashSet<PathBuf>, Vec<Pattern>)> {
     let ignorefile = std::fs::read_to_string(config_path)?;
-    Ok(ignorefile
-        .lines()
-        .filter(|line| !line.trim().is_empty() && !line.starts_with('#'))
-        .map(|pattern| {
-            let pattern = pattern.trim();
+    let mut literal_paths = HashSet::new();
+    let mut patterns = Vec::new();
 
-            match pattern {
-                "*" => current_dir.join("*"),
-                p if p.ends_with('/') => current_dir.join(&p[..p.len() - 1]),
-                p => current_dir.join(p),
-            }
-        })
-        .collect())
+    for line in ignorefile.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut pattern = line.to_string();
+        if pattern.ends_with('/') {
+            pattern = pattern.strip_suffix('/').unwrap().to_string();
+        } else if pattern.starts_with('/') {
+            pattern = pattern.strip_prefix('/').unwrap().to_string();
+        }
+        if is_literal_pattern(&pattern) {
+            literal_paths.insert(current_dir.join(pattern));
+        } else {
+            patterns.push(Pattern::new(&pattern)?);
+        }
+    }
+
+    Ok((literal_paths, patterns))
+}
+
+fn is_literal_pattern(pattern: &str) -> bool {
+    !pattern.contains(&['*', '?', '[', ']'][..])
 }
 
 fn create_config_file(config_path: &Path) -> anyhow::Result<()> {
@@ -259,7 +285,7 @@ fn create_config_file(config_path: &Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(&dotlinker_dir)?;
     std::fs::write(
         dotlinker_dir.join("dotlinkerignore"),
-        "# This file is used to ignore files when symlinking\n.git",
+        "# This file is used to ignore files when symlinking\n.git*\nREADME.md\nLICENSE",
     )?;
     Ok(())
 }
