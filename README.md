@@ -14,8 +14,12 @@ A simple, GNU Stow-like utility for managing your configuration files (dotfiles)
 -   **Customizable:** Specify source and target directories, making it useful for more than just dotfiles.
 
 ## Installation
+dot-linker is available in crates.io install it with cargo
+```bash
+cargo install dot-linker
+```
 
-Currently, you need the Rust toolchain to build the project.
+or clone the repo and build with cargo
 
 ```bash
 # Clone the repository
