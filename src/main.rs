@@ -36,6 +36,10 @@ struct Args {
     /// prints verbose output
     #[clap(long, default_value_t = false)]
     verbose: bool,
+
+    /// unset symlink
+    #[clap(short, long, default_value_t = false)]
+    unset: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -59,8 +63,8 @@ fn main() -> anyhow::Result<()> {
             } else {
                 let path = env::var("HOME")?;
                 print_visual(
-                    &format!("set target directory  to {}/.config", path),
-                    "target directory set to .config",
+                    "target",
+                    &format!("{}/.config", path),
                     "aborting",
                     Some(&format!(
                         " XDG_CONFIG_HOME is not set, setting target directory  to {}/.config",
@@ -71,12 +75,13 @@ fn main() -> anyhow::Result<()> {
             }
         }
     };
+
     match args.files {
         Some(files) => {
             for file in files {
                 let path = env::current_dir()?.join(file);
                 println!("file is {:?}", path);
-                handle_symlink(&path, &target, args.no_symlink)?;
+                handle_symlink(&path, &target, args.no_symlink, args.unset)?;
             }
         }
         None => {
@@ -92,8 +97,8 @@ fn main() -> anyhow::Result<()> {
                 None => {
                     let current_dir = env::current_dir()?;
                     print_visual(
-                        &format!("use current directory {} ", current_dir.display()),
-                        "directory set to current dir",
+                        "current directory",
+                        &format!("{}", current_dir.display()),
                         "aborting",
                         Some("no dir provided in --dir, using current dir"),
                     )?;
@@ -114,41 +119,76 @@ fn main() -> anyhow::Result<()> {
                     print_verbose(&format!("ignoring {}", path.display()));
                     continue;
                 }
-                handle_symlink(&path, &target, args.no_symlink)?;
+                handle_symlink(&path, &target, args.no_symlink, args.unset)?;
             }
         }
     }
     Ok(())
 }
 
-fn handle_symlink(file: &PathBuf, target: &Path, no_symlink: bool) -> anyhow::Result<()> {
+fn handle_symlink(
+    file: &PathBuf,
+    target: &Path,
+    no_symlink: bool,
+    unset: bool,
+) -> anyhow::Result<()> {
     if file.file_name().is_none() {
         println!("skipping '{}'  filename not found", file.display());
         return Ok(());
     }
     let file_name = file.file_name().unwrap();
     let target = target.join(file_name);
-    print_visual(
-        &format!("link? '{}' ", file_name.to_string_lossy()),
-        &format!("symlinking '{}' to '{}'", file.display(), target.display()),
-        &format!("skipping '{}' ", file.display()),
-        None,
-    )?;
-    if target.exists() {
-        println!("target '{}' already exists", target.display());
-        return Ok(());
-    }
-    if no_symlink {
-        println!(
-            "symlinking '{}' to '{}', no symlink created due to --no-symlink",
-            file.display(),
-            target.display()
-        );
-        return Ok(());
+    if unset {
+        if !target.exists() {
+            println!("target '{}' doesn't exists", target.display());
+            return Ok(());
+        }
+        let metadata = std::fs::symlink_metadata(&target)?;
+        if !metadata.file_type().is_symlink() {
+            println!("target {} is not a symlink", target.display());
+            return Ok(());
+        }
+        print_visual(
+            "unlink",
+            &format!("{}", file_name.to_string_lossy()),
+            &format!("skipping '{}' ", file.display()),
+            None,
+        )?;
+        if no_symlink {
+            println!(
+                "unlinking '{}' from '{}', no unlinking due to --no-symlink",
+                file.display(),
+                target.display()
+            );
+            return Ok(());
+        } else {
+            println!("unlinking '{}' from {}", file.display(), target.display());
+            std::fs::remove_file(target)?;
+        }
     } else {
-        println!("symlinking '{}' to {}", file.display(), target.display());
+        if target.exists() {
+            println!("target '{}' already exists", target.display());
+            return Ok(());
+        }
+        print_visual(
+            "symlink",
+            &format!("{}", file_name.to_string_lossy()),
+            &format!("skipping '{}' ", file.display()),
+            None,
+        )?;
+
+        if no_symlink {
+            println!(
+                "symlinking '{}' to '{}', no symlink created due to --no-symlink",
+                file.display(),
+                target.display()
+            );
+            return Ok(());
+        } else {
+            println!("symlinking '{}' to {}", file.display(), target.display());
+            std::os::unix::fs::symlink(file, target)?;
+        }
     }
-    std::os::unix::fs::symlink(file, target)?;
     Ok(())
 }
 
@@ -160,8 +200,8 @@ fn print_verbose(msg: &str) {
 }
 
 fn print_visual(
-    msg: &str,
-    final_msg: &str,
+    item: &str,
+    value: &str,
     skip_msg: &str,
     else_msg: Option<&str>,
 ) -> anyhow::Result<bool> {
@@ -172,7 +212,7 @@ fn print_visual(
         }
         return Ok(true);
     }
-    print!("{}", msg);
+    print!("set {} to {}(y/n)", item, value);
     std::io::stdout().flush()?;
     let mut input = String::new();
     std::io::stdin().read_line(&mut input)?;
@@ -180,6 +220,6 @@ fn print_visual(
         println!("{}", skip_msg);
         return Ok(false);
     }
-    print_verbose(final_msg);
+    print_verbose(&format!("{} set to {}", item, value));
     Ok(true)
 }
