@@ -1,4 +1,3 @@
-use anyhow::Result;
 use clap::Parser;
 use std::io::Write;
 use std::{
@@ -48,17 +47,13 @@ fn main() -> anyhow::Result<()> {
             if !t.is_dir() {
                 anyhow::bail!("target \"{}\" is not a directory", t.display());
             }
-            if args.verbose {
-                println!("target directory set to {}", t.display());
-            }
+            print_verbose(&format!("target directory set to {}", t.display()));
             t
         }
         None => {
             if env::var("XDG_CONFIG_HOME").is_ok() {
                 let path = env::var("XDG_CONFIG_HOME")?;
-                if args.verbose {
-                    println!("target directory  set to {}", path);
-                }
+                print_verbose(&format!("target directory  set to {}", path));
                 PathBuf::from(path)
             } else {
                 let path = env::var("HOME")?;
@@ -71,14 +66,12 @@ fn main() -> anyhow::Result<()> {
                         println!("aborting");
                         return Ok(());
                     }
-                    if args.verbose {
-                        println!("target directory set to {}/.config", path);
-                    }
-                } else if args.verbose {
-                    println!(
+                    print_verbose(&format!("target directory set to {}/.config", path));
+                } else {
+                    print_verbose(&format!(
                         " XDG_CONFIG_HOME is not set, setting target directory  to {}/.config",
                         path
-                    );
+                    ));
                 }
                 PathBuf::from(path).join(".config")
             }
@@ -89,7 +82,7 @@ fn main() -> anyhow::Result<()> {
             for file in files {
                 let path = env::current_dir()?.join(file);
                 println!("file is {:?}", path);
-                handle_symlink(&path, &target, args.verbose, args.no_symlink, args.visual)?;
+                handle_symlink(&path, &target, args.no_symlink, args.visual)?;
             }
         }
         None => {
@@ -101,9 +94,7 @@ fn main() -> anyhow::Result<()> {
                     if !d.exists() {
                         anyhow::bail!("dir does not exist");
                     }
-                    if args.verbose {
-                        println!("dir set to {}", d.display());
-                    }
+                    print_verbose(&format!("dir set to {}", d.display()));
                     d
                 }
                 None => {
@@ -117,11 +108,9 @@ fn main() -> anyhow::Result<()> {
                             println!("aborting");
                             return Ok(());
                         }
-                        if args.verbose {
-                            println!("directory set to {}", current_dir.display());
-                        }
-                    } else if args.verbose {
-                        println!("no dir provided in --dir    using current dir");
+                        print_verbose("directory set to current dir");
+                    } else {
+                        print_verbose("no dir provided in --dir, using current dir");
                     }
                     current_dir
                 }
@@ -129,9 +118,7 @@ fn main() -> anyhow::Result<()> {
             let files = current_dir.read_dir()?;
             let ignore = match args.ignore {
                 Some(i) => {
-                    if args.verbose {
-                        println!("ignoring {:?}", i);
-                    }
+                    print_verbose("ignoring files");
                     i.iter().map(|i| current_dir.join(i)).collect()
                 }
                 None => HashSet::new(),
@@ -139,12 +126,10 @@ fn main() -> anyhow::Result<()> {
             for file in files {
                 let path = file?.path();
                 if ignore.contains(&path) {
-                    if args.verbose {
-                        println!("ignoring {}", path.display());
-                    }
+                    print_verbose(&format!("ignoring {}", path.display()));
                     continue;
                 }
-                handle_symlink(&path, &target, args.verbose, args.no_symlink, args.visual)?;
+                handle_symlink(&path, &target, args.no_symlink, args.visual)?;
             }
         }
     }
@@ -154,7 +139,6 @@ fn main() -> anyhow::Result<()> {
 fn handle_symlink(
     file: &PathBuf,
     target: &Path,
-    verbose: bool,
     no_symlink: bool,
     visual: bool,
 ) -> anyhow::Result<()> {
@@ -170,9 +154,7 @@ fn handle_symlink(
         let mut input = String::new();
         std::io::stdin().read_line(&mut input)?;
         if !matches!(input.trim(), "y" | "yes" | "") {
-            if verbose {
-                println!("skipping '{}' ", file.display());
-            }
+            print_verbose(&format!("skipping '{}' ", file.display()));
             return Ok(());
         }
     }
@@ -192,4 +174,10 @@ fn handle_symlink(
     }
     std::os::unix::fs::symlink(file, target)?;
     Ok(())
+}
+fn print_verbose(msg: &str) {
+    let verbose = Args::parse().verbose;
+    if verbose {
+        println!("{}", msg);
+    }
 }
