@@ -40,37 +40,35 @@ fn main() -> anyhow::Result<()> {
             for file in files {
                 let path = base_dir.join(file);
                 if ignore_list.is_ignored(&path)
-                    && !prompt_user(
-                        "this file is in ignore list , do you want to symlink anyway?",
+                    && prompt_user(
+                        &format!(
+                            "'{}' is in ignore list, do you  want to  skip it? ",
+                            path.file_name().unwrap().to_string_lossy()
+                        ),
                         UIMode::Interactive,
                     )?
                 {
-                    verbose_println(
-                        &format!("file in ignore list {},skipping", path.display()),
-                        is_verbose,
+                    println!(
+                        "'{}' in ignore list ,skipping",
+                        path.file_name().unwrap().to_string_lossy()
                     );
                     continue;
                 }
-                handle_link(&path, &target_dir, &action, simulate)?
+                handle_link(&path, &target_dir, &action, simulate, ui_mode)?
             }
         }
         None => {
             let files = base_dir.read_dir()?;
             for file in files {
                 let path = file?.path();
-                if ignore_list.is_ignored(&path)
-                    && !prompt_user(
-                        "this file is in ignore list , do you want to symlink anyway?",
-                        ui_mode,
-                    )?
-                {
-                    verbose_println(
-                        &format!("file in ignore list {},skipping", path.display()),
-                        is_verbose,
+                if ignore_list.is_ignored(&path) {
+                    println!(
+                        "'{}' in ignore list ,skipping",
+                        path.file_name().unwrap().to_string_lossy()
                     );
                     continue;
                 }
-                handle_link(&path, &target_dir, &action, simulate)?
+                handle_link(&path, &target_dir, &action, simulate, ui_mode)?
             }
         }
     }

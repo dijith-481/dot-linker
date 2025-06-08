@@ -53,7 +53,7 @@ pub mod config {
         path::{Path, PathBuf},
     };
     static CONFIG_DIRECTORY: &str = "dotlinker";
-    static CONFIG_FILE: &str = "dotlinkerignore";
+    static CONFIG_FILE: &str = "dotignore";
 
     pub fn get_config_path() -> Result<PathBuf> {
         Ok(match env::var("XDG_CONFIG_HOME").ok() {
@@ -105,6 +105,8 @@ pub mod link {
     use anyhow::Result;
     use std::path::Path;
 
+    use crate::{UIMode, prompt_user};
+
     pub enum LinkAction {
         Link,
         Unlink,
@@ -123,6 +125,7 @@ pub mod link {
         target_dir: &Path,
         action: &LinkAction,
         simulate: bool,
+        ui_mode: UIMode,
     ) -> Result<()> {
         let target_path = match source.file_name() {
             Some(file_name) => target_dir.join(file_name),
@@ -136,39 +139,58 @@ pub mod link {
             LinkAction::Link => {
                 if target_path.exists() {
                     println!(
-                        "target '{}' already exists, skipping.",
-                        target_path.display()
+                        "'{}' already exists in {}, skipping.",
+                        target_path.file_name().unwrap().to_string_lossy(),
+                        target_dir.file_name().unwrap().to_string_lossy(),
                     );
                     return Ok(());
                 }
-                simulate_println(
-                    &format!(
-                        "linking '{}' -> '{}'",
-                        source.display(),
-                        target_path.display()
-                    ),
-                    simulate,
-                );
-                std::os::unix::fs::symlink(source, target_path)?;
-            }
-            LinkAction::Unlink => {
-                if !target_path.exists() {
-                    println!(
-                        "target '{}' doesn't exists, skipping.",
-                        target_path.display()
-                    );
-                    return Ok(());
-                }
-                if target_path.symlink_metadata()?.file_type().is_symlink() {
+                if prompt_user(
+                    &format!("link {}", source.file_name().unwrap().to_string_lossy()),
+                    ui_mode,
+                )? {
                     simulate_println(
                         &format!(
-                            "unlinking '{}' -> '{}'",
-                            source.display(),
+                            "linking '{}' -> '{}'",
+                            source.file_name().unwrap().to_string_lossy(),
                             target_path.display()
                         ),
                         simulate,
                     );
-                    std::fs::remove_file(target_path)?;
+                    if !simulate {
+                        std::os::unix::fs::symlink(source, target_path)?;
+                    }
+                } else {
+                    println!("skipping '{}'  user skipped", source.display());
+                }
+            }
+            LinkAction::Unlink => {
+                if !target_path.exists() {
+                    println!(
+                        "'{}' doesn't exists, skipping.",
+                        target_path.file_name().unwrap().to_string_lossy(),
+                    );
+                    return Ok(());
+                }
+                if target_path.symlink_metadata()?.file_type().is_symlink() {
+                    if prompt_user(
+                        &format!("unlink {}", source.file_name().unwrap().to_string_lossy()),
+                        ui_mode,
+                    )? {
+                        simulate_println(
+                            &format!(
+                                "unlinking '{}' <- '{}'",
+                                source.file_name().unwrap().to_string_lossy(),
+                                target_path.display()
+                            ),
+                            simulate,
+                        );
+                        if !simulate {
+                            std::fs::remove_file(target_path)?;
+                        }
+                    } else {
+                        println!("skipping '{}'  user skipped", source.display());
+                    }
                 } else {
                     println!(
                         "target '{}' is not a symlink, skipping.",
