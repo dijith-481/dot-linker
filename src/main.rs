@@ -1,84 +1,195 @@
 use anyhow::Result;
 use clap::Parser;
-use std::{env, path::PathBuf};
+use std::io::Write;
+use std::{
+    collections::HashSet,
+    env,
+    path::{Path, PathBuf},
+};
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
+    /// The target directory to symlink to
     #[clap(short, long)]
     target: Option<PathBuf>,
 
+    /// The directory to symlink from
     #[clap(value_name = "DIR")]
     dir: Option<PathBuf>,
 
+    /// The files to symlink if not symlinking from a directory this takes precedence over dir
     #[clap(short, long, value_name = "FILE", num_args=1.. )]
-    files: Option<Vec<PathBuf>>,
+    files: Option<Vec<String>>,
 
+    /// The files to ignore if symlinking from a directory
     #[clap(short, long, value_name = "IGNORE", num_args=1.. )]
-    ignore: Option<Vec<PathBuf>>,
+    ignore: Option<Vec<String>>,
 
-    #[clap(short, long)]
+    /// donesn't actually symlink but prints the target
+    #[clap(short, long, default_value_t = false)]
+    no_symlink: bool,
+
+    /// asks for confirmation before symlinking
+    #[clap(short, long, default_value_t = false)]
     visual: bool,
+
+    /// prints verbose output
+    #[clap(long, default_value_t = false)]
+    verbose: bool,
 }
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let target = match args.target {
         Some(t) => {
             if !t.exists() {
-                anyhow::bail!("target does not exist");
+                anyhow::bail!("target \"{}\" does not exist", t.display());
+            }
+            if !t.is_dir() {
+                anyhow::bail!("target \"{}\" is not a directory", t.display());
+            }
+            if args.verbose {
+                println!("target directory set to {}", t.display());
             }
             t
         }
         None => {
             if env::var("XDG_CONFIG_HOME").is_ok() {
-                PathBuf::from(env::var("XDG_CONFIG_HOME").unwrap())
+                let path = env::var("XDG_CONFIG_HOME")?;
+                if args.verbose {
+                    println!("target directory  set to {}", path);
+                }
+                PathBuf::from(path)
             } else {
-                PathBuf::from(env::var("HOME").unwrap()).join(".config")
+                let path = env::var("HOME")?;
+                if args.visual {
+                    print!("set target directory  to {}/.config(y/n)", path);
+                    std::io::stdout().flush()?;
+                    let mut input = String::new();
+                    std::io::stdin().read_line(&mut input)?;
+                    if !matches!(input.trim(), "y" | "yes" | "") {
+                        println!("aborting");
+                        return Ok(());
+                    }
+                    if args.verbose {
+                        println!("target directory set to {}/.config", path);
+                    }
+                } else if args.verbose {
+                    println!(
+                        " XDG_CONFIG_HOME is not set, setting target directory  to {}/.config",
+                        path
+                    );
+                }
+                PathBuf::from(path).join(".config")
             }
         }
     };
+    match args.files {
+        Some(files) => {
+            for file in files {
+                let path = env::current_dir()?.join(file);
+                println!("file is {:?}", path);
+                handle_symlink(&path, &target, args.verbose, args.no_symlink, args.visual)?;
+            }
+        }
+        None => {
+            if args.verbose {
+                println!("no files provided in --files    checking for directory");
+            }
+            let current_dir = match args.dir {
+                Some(d) => {
+                    if !d.exists() {
+                        anyhow::bail!("dir does not exist");
+                    }
+                    if args.verbose {
+                        println!("dir set to {}", d.display());
+                    }
+                    d
+                }
+                None => {
+                    let current_dir = env::current_dir()?;
+                    if args.visual {
+                        print!("use current directory {} (y/n)", current_dir.display());
+                        std::io::stdout().flush()?;
+                        let mut input = String::new();
+                        std::io::stdin().read_line(&mut input)?;
+                        if !matches!(input.trim(), "y" | "yes" | "") {
+                            println!("aborting");
+                            return Ok(());
+                        }
+                        if args.verbose {
+                            println!("directory set to {}", current_dir.display());
+                        }
+                    } else if args.verbose {
+                        println!("no dir provided in --dir    using current dir");
+                    }
+                    current_dir
+                }
+            };
+            let files = current_dir.read_dir()?;
+            let ignore = match args.ignore {
+                Some(i) => {
+                    if args.verbose {
+                        println!("ignoring {:?}", i);
+                    }
+                    i.iter().map(|i| current_dir.join(i)).collect()
+                }
+                None => HashSet::new(),
+            };
+            for file in files {
+                let path = file?.path();
+                if ignore.contains(&path) {
+                    if args.verbose {
+                        println!("ignoring {}", path.display());
+                    }
+                    continue;
+                }
+                handle_symlink(&path, &target, args.verbose, args.no_symlink, args.visual)?;
+            }
+        }
+    }
+    Ok(())
+}
 
-    // if args.files.is_some() {
-    //     println!("files are {:?}", args.files);
-    //     for file in args.files.unwrap() {
-    //         let target = target.join(file.file_name().unwrap());
-    //         if args.visual {
-    //             println!("{}", target.display());
-    //         } else {
-    //             // std::os::unix::fs::symlink(file, target).unwrap();
-    //             println!("symlinking{:?}{:?}", file, target);
-    //         }
-    //     }
-    // } else {
-    //     let current_dir = if args.dir.is_none() {
-    //         //get current dir
-    //         env::current_dir().unwrap()
-    //     } else {
-    //         if !args.dir.as_ref().unwrap().exists() {
-    //             panic!("dir does not exist");
-    //         }
-    //         args.dir.unwrap()
-    //     };
-    //     let files = current_dir.read_dir().unwrap();
-    //     for file in files {
-    //         let file = file.unwrap();
-    //         let path = file.path();
-    //         if args.ignore.is_some() {
-    //             let ignore = args.ignore.as_ref().unwrap();
-    //             if ignore.contains(&path) {
-    //                 continue;
-    //             }
-    //         }
-    //         if path.is_dir() {
-    //             let target = target.join(path.file_name().unwrap());
-    //             if args.visual {
-    //                 println!("{}", target.display());
-    //             } else {
-    //                 // std::os::unix::fs::symlink(path, target).unwrap();
-    //                 println!("symlinking{:?}{:?}", path, target);
-    //             }
-    //         }
-    //     }
-    // }
+fn handle_symlink(
+    file: &PathBuf,
+    target: &Path,
+    verbose: bool,
+    no_symlink: bool,
+    visual: bool,
+) -> anyhow::Result<()> {
+    if file.file_name().is_none() {
+        println!("skipping '{}'  filename not found", file.display());
+        return Ok(());
+    }
+    let file_name = file.file_name().unwrap();
+    let target = target.join(file_name);
+    if visual {
+        print!("link? '{}' (y/n)", file_name.to_string_lossy());
+        std::io::stdout().flush()?;
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        if !matches!(input.trim(), "y" | "yes" | "") {
+            if verbose {
+                println!("skipping '{}' ", file.display());
+            }
+            return Ok(());
+        }
+    }
+    if target.exists() {
+        println!("target '{}' already exists", target.display());
+        return Ok(());
+    }
+    if no_symlink {
+        println!(
+            "symlinking '{}' to '{}', no symlink created due to --no-symlink",
+            file.display(),
+            target.display()
+        );
+        return Ok(());
+    } else {
+        println!("symlinking '{}' to {}", file.display(), target.display());
+    }
+    std::os::unix::fs::symlink(file, target)?;
     Ok(())
 }
