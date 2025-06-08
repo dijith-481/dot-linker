@@ -2,9 +2,9 @@ use clap::Parser;
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
+#[command(version, about="symlink's your dots", long_about = None)]
 pub struct Args {
-    /// The target directory to symlink to
+    /// The directory to symlink to
     #[clap(short, long)]
     pub target: Option<PathBuf>,
 
@@ -12,19 +12,19 @@ pub struct Args {
     #[clap(value_name = "DIR")]
     pub dir: Option<PathBuf>,
 
-    /// The files to symlink if not symlinking from a directory this takes precedence over dir
+    /// The files to symlink highier precedence than dir
     #[clap(short, long, value_name = "FILE", num_args=1.. )]
     pub files: Option<Vec<String>>,
 
-    /// The files to ignore if symlinking from a directory
+    /// The files to ignore
     #[clap(short, long, value_name = "IGNORE", num_args=1.. )]
     pub ignore: Option<Vec<String>>,
 
-    /// donesn't actually symlink but prints the target
+    /// simulate the  symlink no actual linking
     #[clap(short, long, default_value_t = false)]
     pub no_symlink: bool,
 
-    /// asks for confirmation before symlinking
+    /// asks for confirmation before actions
     #[clap(short, long, default_value_t = false)]
     pub visual: bool,
 

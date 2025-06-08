@@ -1,7 +1,15 @@
 [package]
 name = "dot-linker"
-version = "0.1.0"
+version = "1.0.0"
+authors = ["Dijith Dinesh <dijithdinesh@protonmail.com>"]
 edition = "2024"
+description = "symlink your dotfiles"
+license = "MIT"
+readme = "README.md"
+homepage = "https://github.com/dijith-481/dot-linker"
+repository = "https://github.com/dijith-481/dot-linker"
+keywords = ["cli", "symlink", "dotfiles"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 anyhow = "1.0.98"
